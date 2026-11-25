@@ -1,0 +1,58 @@
+# redis.yaml
+#
+# Redis, the shared store for the rate limit counters, plus a Service so other pods can reach it.
+# One replica only: this is a single Redis, not a cluster.
+
+# A Deployment keeps the wanted number of identical pods running and restarts them if they fail.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  # Name of this Deployment.
+  name: redis
+spec:
+  # Run exactly one Redis pod.
+  replicas: 1
+  # The Deployment manages pods that carry this label.
+  selector:
+    matchLabels:
+      app: redis
+  # Template for the pods the Deployment creates.
+  template:
+    metadata:
+      # Label that the selector above and the Service below use to find these pods.
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          # Official Redis image, latest major version.
+          image: redis:8
+          # Turn off saving to disk: counters are short lived and a restart only gives clients a fresh bucket.
+          args: ["--save", "", "--appendonly", "no"]
+          # Port Redis listens on inside the container.
+          ports:
+            - containerPort: 6379
+          # Ready when Redis accepts connections. The Service sends traffic only to ready pods.
+          readinessProbe:
+            tcpSocket:
+              port: 6379
+          # Restart the container if Redis stops accepting connections.
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+---
+# A Service gives a set of pods one stable name and address inside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  # Other pods reach Redis at the DNS name "redis" (redis:6379).
+  name: redis
+spec:
+  # ClusterIP means reachable only from inside the cluster.
+  type: ClusterIP
+  # Send traffic to pods with this label.
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379

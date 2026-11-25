@@ -1,0 +1,62 @@
+# rules.yaml
+#
+# The Rules Service, plus a Service so the gateways can fetch rules from it.
+# One replica only: rules are kept in memory, so a second replica would hold different rules.
+
+# A Deployment keeps the wanted number of identical pods running and restarts them if they fail.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  # Name of this Deployment.
+  name: rules
+spec:
+  # Run exactly one Rules Service pod.
+  replicas: 1
+  # The Deployment manages pods that carry this label.
+  selector:
+    matchLabels:
+      app: rules
+  # Template for the pods the Deployment creates.
+  template:
+    metadata:
+      # Label that the selector above and the Service below use to find these pods.
+      labels:
+        app: rules
+    spec:
+      containers:
+        - name: rules
+          # Image built from deploy/Dockerfile. It exists on the local machine, so do not try to pull it.
+          image: rate-limiter:local
+          imagePullPolicy: IfNotPresent
+          # Run the /rules program from the image. The distroless image has no shell, so this is a direct command.
+          command: ["/rules"]
+          args: ["-addr", ":9090"]
+          # Port the Rules Service listens on inside the container.
+          ports:
+            - containerPort: 9090
+          # Ready when listing rules answers 200. The Service sends traffic only to ready pods.
+          readinessProbe:
+            httpGet:
+              path: /v1/rules
+              port: 9090
+          # Restart the container if listing rules stops answering.
+          livenessProbe:
+            httpGet:
+              path: /v1/rules
+              port: 9090
+---
+# A Service gives a set of pods one stable name and address inside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  # The gateways reach the Rules Service at http://rules:9090.
+  name: rules
+spec:
+  # ClusterIP means reachable only from inside the cluster.
+  type: ClusterIP
+  # Send traffic to pods with this label.
+  selector:
+    app: rules
+  ports:
+    - port: 9090
+      targetPort: 9090

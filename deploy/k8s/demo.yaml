@@ -1,0 +1,69 @@
+# demo.yaml
+#
+# The gateway demo (rate limited API), two replicas, plus a Service that spreads requests over them.
+# Both replicas use the same Redis, so they share one limit per key.
+
+# A Deployment keeps the wanted number of identical pods running and restarts them if they fail.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  # Name of this Deployment.
+  name: demo
+spec:
+  # Run two gateway pods to show that they share one limit.
+  replicas: 2
+  # The Deployment manages pods that carry this label.
+  selector:
+    matchLabels:
+      app: demo
+  # Template for the pods the Deployment creates.
+  template:
+    metadata:
+      # Label that the selector above and the Service below use to find these pods.
+      labels:
+        app: demo
+    spec:
+      containers:
+        - name: demo
+          # Image built from deploy/Dockerfile. It exists on the local machine, so do not try to pull it.
+          image: rate-limiter:local
+          imagePullPolicy: IfNotPresent
+          # Run the /demo program from the image. The distroless image has no shell, so this is a direct command.
+          command: ["/demo"]
+          # Flags: listen on 8080, keep counters in Redis, and fetch rules from the Rules Service.
+          # "redis" and "rules" are the Service names, which the cluster DNS resolves to addresses.
+          args:
+            - "-addr=:8080"
+            - "-store=redis"
+            - "-redis=redis:6379"
+            - "-rules-url=http://rules:9090"
+            - "-rules-poll=5s"
+          # Port the gateway listens on inside the container.
+          ports:
+            - containerPort: 8080
+          # Ready when /healthz answers 200. The Service sends traffic only to ready pods.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          # Restart the container if /healthz stops answering.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+---
+# A Service gives a set of pods one stable name and address inside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  # Clients inside the cluster call the gateway at http://demo:8080.
+  name: demo
+spec:
+  # ClusterIP means reachable only from inside the cluster. Use "kubectl port-forward" to reach it from your computer.
+  type: ClusterIP
+  # Spread requests over the pods with this label.
+  selector:
+    app: demo
+  ports:
+    - port: 8080
+      targetPort: 8080
