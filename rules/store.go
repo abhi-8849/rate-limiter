@@ -17,10 +17,15 @@
 package rules
 
 import (
+	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/abhi-8849/rate-limiter/limiter"
 )
+
+// ErrInvalidRule is returned by Validate when a rule has a limit, window or burst that is not greater than zero.
+var ErrInvalidRule = errors.New("invalid rule")
 
 // AnyEndpoint is the endpoint value of a tenant default rule.
 // It applies to every endpoint of that tenant that has no rule of its own.
@@ -48,6 +53,22 @@ type Rule struct {
 
 	// Version is set by the store on Put. It only ever increases.
 	Version int64 `json:"version"`
+}
+
+// Validate rejects a rule the limiter could not use: limit, window and burst must all be greater than zero.
+// A zero window would divide by zero in ToLimiter, and a zero burst would deny every request.
+func (r Rule) Validate() error {
+	if r.Limit <= 0 || r.Window <= 0 || r.Burst <= 0 {
+		return fmt.Errorf("%w: limit, window and burst must be greater than zero", ErrInvalidRule)
+	}
+	return nil
+}
+
+// Snapshot is the answer to a rules query: the rules newer than the requested version, and the version to ask from next time.
+// It is the JSON body of GET /v1/rules, shared by the Rules Service and the poller.
+type Snapshot struct {
+	Version int64  `json:"version"`
+	Rules   []Rule `json:"rules"`
 }
 
 // ToLimiter converts the rule to what the limiter needs.
@@ -116,13 +137,23 @@ func (s *Store) Since(v int64) []Rule {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var out []Rule
+	out := []Rule{}
 	for _, r := range s.byID {
 		if r.Version > v {
 			out = append(out, r)
 		}
 	}
 	return out
+}
+
+// Snapshot returns the rules newer than since, plus the highest version among them (or since if there are none).
+// Asking again with that version returns only later changes.
+func (s *Store) Snapshot(since int64) Snapshot {
+	snap := Snapshot{Version: since, Rules: s.Since(since)}
+	for _, r := range snap.Rules {
+		snap.Version = max(snap.Version, r.Version)
+	}
+	return snap
 }
 
 // Match returns the limiter rule for a request. The first hit wins:

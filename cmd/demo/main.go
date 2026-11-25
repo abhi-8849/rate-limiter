@@ -8,6 +8,10 @@
 //   - GET /hello    protected by the middleware, answers "ok".
 //   - GET /healthz  not limited, used by Docker and Kubernetes probes.
 //
+// Rules:
+//   - A poller fetches rules from the Rules Service every -rules-poll and keeps them in a local store.
+//   - If the Rules Service is down, the last-known rules stay in use.
+//
 // Things to know:
 //   - -rate and -burst set the global default rule, so a request with no matching rule is still limited.
 //   - The limiter is in memory, so the limit is per process.
@@ -47,6 +51,8 @@ func run() error {
 	addr := flag.String("addr", ":8080", "listen address")
 	rate := flag.Float64("rate", 5, "global default: tokens per second")
 	burst := flag.Int64("burst", 10, "global default: bucket capacity")
+	rulesURL := flag.String("rules-url", "http://localhost:9090", "Rules Service base URL")
+	rulesPoll := flag.Duration("rules-poll", 10*time.Second, "how often to fetch rules")
 	flag.Parse()
 
 	store := rules.NewStore(limiter.Rule{Rate: *rate, Burst: *burst})
@@ -55,6 +61,9 @@ func run() error {
 	// ctx is cancelled by SIGINT or SIGTERM. stop releases the signal handler on return.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The poller goroutine is started here and stops when ctx is cancelled (see Poller.Run).
+	go rules.NewPoller(*rulesURL, *rulesPoll, store).Run(ctx)
 	return serve(ctx, srv)
 }
 
