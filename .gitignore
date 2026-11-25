@@ -38,3 +38,6 @@ go.work.sum
 
 # macOS
 .DS_Store
+
+# Redis snapshot written when redis-server runs in this folder
+dump.rdb
