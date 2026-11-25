@@ -76,10 +76,9 @@ type Clock interface {
 	Now() time.Time
 }
 
-// Hooks lets the caller observe limiter events, for example to count them with expvar.
+// Hooks lets the caller observe limiter events, for example to count them.
 //
-// The library calls these methods but never imports a metrics package,
-// so the choice of metrics stays with the application.
+// The library only calls these methods, so the application decides what to do with each event.
 // Implementations must be safe for concurrent use.
 type Hooks interface {
 	// OnAllowed is called when a request is allowed.

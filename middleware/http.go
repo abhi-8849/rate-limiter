@@ -104,7 +104,7 @@ func clientIP(r *http.Request) string {
 
 // key builds the limiter key as {tenant}:apikey:group.
 // The braces are a Redis hash tag: only the tenant is hashed, so all of a tenant's keys land on one
-// Redis Cluster slot. The POC runs a single Redis, but the key is ready for a cluster.
+// Redis Cluster slot. This setup runs a single Redis, but the key is ready for a cluster.
 func key(tenant, apiKey, group string) string {
 	return fmt.Sprintf("{%s}:%s:%s", tenant, apiKey, group)
 }
