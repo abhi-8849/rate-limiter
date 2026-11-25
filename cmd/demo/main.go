@@ -14,7 +14,7 @@
 //
 // Things to know:
 //   - -rate and -burst set the global default rule, so a request with no matching rule is still limited.
-//   - The limiter is in memory, so the limit is per process.
+//   - -store memory keeps the limit per process. -store redis shares one limit between all instances.
 //   - SIGINT or SIGTERM stops new connections and lets running requests finish.
 
 package main
@@ -31,10 +31,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/abhi-8849/rate-limiter/limiter"
 	"github.com/abhi-8849/rate-limiter/middleware"
+	"github.com/abhi-8849/rate-limiter/redisstore"
 	"github.com/abhi-8849/rate-limiter/rules"
 )
+
+// ErrUnknownStore is returned when -store is not "memory" or "redis".
+var ErrUnknownStore = errors.New("unknown store")
 
 // shutdownTimeout is how long running requests get to finish after a stop signal.
 const shutdownTimeout = 10 * time.Second
@@ -51,12 +57,19 @@ func run() error {
 	addr := flag.String("addr", ":8080", "listen address")
 	rate := flag.Float64("rate", 5, "global default: tokens per second")
 	burst := flag.Int64("burst", 10, "global default: bucket capacity")
+	storeKind := flag.String("store", "memory", "limiter store: memory or redis")
+	redisAddr := flag.String("redis", "localhost:6379", "Redis address, used with -store redis")
+	redisTimeout := flag.Duration("redis-timeout", 5*time.Millisecond, "timeout for each Redis call")
 	rulesURL := flag.String("rules-url", "http://localhost:9090", "Rules Service base URL")
 	rulesPoll := flag.Duration("rules-poll", 10*time.Second, "how often to fetch rules")
 	flag.Parse()
 
+	lim, err := newLimiter(*storeKind, *redisAddr, *redisTimeout)
+	if err != nil {
+		return err
+	}
 	store := rules.NewStore(limiter.Rule{Rate: *rate, Burst: *burst})
-	srv := &http.Server{Addr: *addr, Handler: newMux(limiter.NewMemory(nil), store)}
+	srv := &http.Server{Addr: *addr, Handler: newMux(lim, store)}
 
 	// ctx is cancelled by SIGINT or SIGTERM. stop releases the signal handler on return.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -65,6 +78,18 @@ func run() error {
 	// The poller goroutine is started here and stops when ctx is cancelled (see Poller.Run).
 	go rules.NewPoller(*rulesURL, *rulesPoll, store).Run(ctx)
 	return serve(ctx, srv)
+}
+
+// newLimiter picks the limiter for the -store flag.
+func newLimiter(kind, redisAddr string, redisTimeout time.Duration) (limiter.Limiter, error) {
+	switch kind {
+	case "memory":
+		return limiter.NewMemory(nil), nil
+	case "redis":
+		return redisstore.New(redis.NewClient(&redis.Options{Addr: redisAddr}), redisTimeout), nil
+	default:
+		return nil, fmt.Errorf("%w: %q, want memory or redis", ErrUnknownStore, kind)
+	}
 }
 
 // newMux builds the routes. Only /hello goes through the rate limit middleware.
