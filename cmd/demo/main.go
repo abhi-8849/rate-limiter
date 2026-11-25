@@ -86,7 +86,9 @@ func newLimiter(kind, redisAddr string, redisTimeout time.Duration) (limiter.Lim
 	case "memory":
 		return limiter.NewMemory(nil), nil
 	case "redis":
-		return redisstore.New(redis.NewClient(&redis.Options{Addr: redisAddr}), redisTimeout), nil
+		// If Redis fails, the in-memory limiter answers instead, so /hello keeps working. No hooks are needed here.
+		primary := redisstore.New(redis.NewClient(&redis.Options{Addr: redisAddr}), redisTimeout)
+		return limiter.NewFailover(primary, limiter.NewMemory(nil), nil), nil
 	default:
 		return nil, fmt.Errorf("%w: %q, want memory or redis", ErrUnknownStore, kind)
 	}
