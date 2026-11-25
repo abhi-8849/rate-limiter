@@ -8,6 +8,49 @@ A token bucket rate limiter in Go with per-tenant, per-endpoint rules.
 - A Rules Service that stores rules; gateways poll it and cache the rules locally.
 - `net/http` middleware that answers `429` and sets the rate limit headers.
 
+## Architecture
+
+```
+              +-----------+
+clients ----> | gateway 1 |---+
+              +-----------+   |   atomic Lua script        +-------+
+              +-----------+   +--------------------------> | Redis |
+clients ----> | gateway 2 |---+                            +-------+
+              +-----------+
+                    |
+                    | poll rules every -rules-poll
+                    v
+            +---------------+
+            | Rules Service |
+            +---------------+
+```
+
+Request flow in a gateway:
+
+1. The middleware builds the identity (tenant, API key, endpoint group) and the key `{tenant}:apikey:group`.
+2. It matches a rule from the local rules cache.
+3. It calls `Allow(ctx, key, rule, 1)`. Redis refills the bucket, checks it and takes the token in one script.
+4. It sets the rate limit headers, then calls the real handler or answers `429`.
+
+Design decisions:
+
+- **One Lua script in Redis.** Refill, check and decrement run as one step, so two gateways can never spend the same token.
+- **Redis `TIME`.** The script uses the Redis clock, so clock differences between gateways do not matter.
+- **Counters only in Redis.** The rule numbers (`rate`, `burst`) travel as script arguments, so a rule change needs no Redis update.
+- **Key TTL.** A key expires after the time a bucket needs to refill fully, because after that it is the same as a new key.
+- **Hash tag in the key.** The braces in `{tenant}:apikey:group` keep one tenant's keys on one Redis Cluster slot. This setup runs a single Redis.
+- **Rules are cached in the gateway.** The Rules Service is not on the request path, so it can be slow or down without affecting requests.
+
+When something fails:
+
+| Failure | Behavior |
+|---------|----------|
+| Redis errors or times out | The in-memory limiter answers with the same rule and the error is logged. Limits apply per instance until Redis is back. |
+| An error from the limiter reaches the middleware | The middleware logs it and lets the request through. |
+| Rules Service is down | Gateways keep the last rules they received and log each failed poll. |
+| Rules Service restarts | Its rules are lost until they are put again. Running gateways keep their cached copy. |
+| A gateway has no rule for a request | The global default from `-rate` and `-burst` applies, so nothing is unprotected. |
+
 ## How it works
 
 Each key (`{tenant}:apikey:group`) has a bucket that holds up to `burst` tokens and gains `rate` tokens per second.
