@@ -29,7 +29,7 @@ Where it sits: the gateway is the single entry point in front of the microservic
                                    rule, cost)  |             | GET /v1/rules?since=N
                                                 v             v
                                        +--------------+   +-----------------+              operator
-                                       | Redis        |   | Rules Service   | <------ PUT /v1/rules/{id}
+                                       | Redis        |   | Rules Service   | <------ PUT /v1/rules/{tenant}/{endpoint}
                                        | token bucket |   | rules + version |
                                        | per key      |   | (in memory)     |
                                        +--------------+   +-----------------+
@@ -108,7 +108,7 @@ Main types and functions:
 | `limiter` | `NewMemory(clock)` | In-memory token bucket, one mutex around a map of buckets. |
 | `limiter` | `NewFailover(primary, fallback, hooks)` | Uses the primary. On a primary error it logs and uses the fallback. |
 | `redisstore` | `New(client, timeout)` | Redis limiter. Runs the embedded Lua script with a timeout on every call. |
-| `rules` | `Rule{ID, Tenant, Endpoint, Limit, Window, Burst, Version}` | A stored rule. `ToLimiter()` gives `Rate = Limit / Window`. |
+| `rules` | `Rule{Tenant, Endpoint, Limit, Window, Burst, Version}` | A stored rule. `ToLimiter()` gives `Rate = Limit / Window`. |
 | `rules` | `Store` | `Put` (Rules Service), `Apply` (gateway), `Since`, `Snapshot`, `Match`. |
 | `rules` | `Poller` | `Run(ctx)` fetches new rules on a timer and applies them to a `Store`. |
 | `middleware` | `New(limiter, store)` | `net/http` middleware that does the request flow above. |
@@ -252,15 +252,17 @@ About ten `200` responses, then `429`.
 
 Flag `-addr` (default `:9090`). Rules are kept in memory and are lost on restart.
 
-Create or replace a rule:
+Create or replace the rule for a tenant and an endpoint:
 
 ```
-curl -X PUT localhost:9090/v1/rules/1 \
-  -d '{"tenant":"acme","endpoint":"*","limit":2,"window":10,"burst":2}'
+curl -X PUT localhost:9090/v1/rules/acme/orders -d '{"limit":2,"window":10,"burst":2}'
+curl -X PUT localhost:9090/v1/rules/acme/*      -d '{"limit":5,"window":10,"burst":10}'   # tenant default
 ```
 
-`limit`, `window` and `burst` must be greater than zero, otherwise the answer is `400`.
-Each stored rule gets a version that only increases.
+- The tenant and the endpoint in the URL identify the rule, so there is one rule per tenant and endpoint. Putting it again replaces it.
+- `*` as the endpoint is the tenant default.
+- `limit`, `window` and `burst` must be greater than zero, otherwise the answer is `400`.
+- Each stored rule gets a version that only increases.
 
 List rules newer than a version:
 

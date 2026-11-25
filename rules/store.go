@@ -9,6 +9,7 @@
 //   - Each gateway keeps a local copy: Apply fills it from the poller, Match reads it per request.
 //
 // Things to know:
+//   - There is one rule per tenant and endpoint. Putting the same tenant and endpoint again replaces the rule.
 //   - Every Put gets the next version number, so a gateway can ask only for what changed.
 //   - Match always returns a rule, so no request is left unprotected.
 //   - Rules live in memory only and are lost on restart.
@@ -33,10 +34,7 @@ const AnyEndpoint = "*"
 
 // Rule is one stored limit, in the shape the Rules Service accepts and returns as JSON.
 type Rule struct {
-	// ID identifies the rule. Putting the same ID again replaces the old rule.
-	ID string `json:"id"`
-
-	// Tenant is the customer the rule applies to.
+	// Tenant is the customer the rule applies to. Together with Endpoint it identifies the rule.
 	Tenant string `json:"tenant"`
 
 	// Endpoint is the endpoint group the rule applies to, or AnyEndpoint for all of the tenant's endpoints.
@@ -77,7 +75,7 @@ func (r Rule) ToLimiter() limiter.Rule {
 	return limiter.Rule{Rate: float64(r.Limit) / float64(r.Window), Burst: r.Burst}
 }
 
-// target is what a rule applies to. It is the lookup key for Match.
+// target is what a rule applies to. It identifies the rule and is the lookup key for Match.
 type target struct{ tenant, endpoint string }
 
 // Store is a concurrency-safe in-memory set of rules. Create it with NewStore.
@@ -91,28 +89,25 @@ type Store struct {
 	// version is the highest version stored so far.
 	version int64
 
-	// byID holds the rules. Same ID means same rule.
-	byID map[string]Rule
-
-	// byTarget maps what a rule applies to onto its ID, so Match is a map lookup and not a scan.
-	byTarget map[target]string
+	// rules holds one rule per target, so Match is a map lookup and not a scan.
+	rules map[target]Rule
 }
 
 // NewStore returns an empty store. def is the global default that Match falls back to,
 // normally built from the -rate and -burst flags.
 func NewStore(def limiter.Rule) *Store {
-	return &Store{def: def, byID: make(map[string]Rule), byTarget: make(map[target]string)}
+	return &Store{def: def, rules: make(map[target]Rule)}
 }
 
 // Put is used by the Rules Service. It stores r with the next version number and returns it.
-// If r.ID already exists, the old rule is replaced.
+// If a rule for the same tenant and endpoint already exists, it is replaced.
 func (s *Store) Put(r Rule) Rule {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.version++
 	r.Version = s.version
-	s.set(r)
+	s.rules[target{r.Tenant, r.Endpoint}] = r
 	return r
 }
 
@@ -123,11 +118,12 @@ func (s *Store) Apply(rs []Rule) {
 	defer s.mu.Unlock()
 
 	for _, r := range rs {
-		if old, ok := s.byID[r.ID]; ok && old.Version >= r.Version {
+		t := target{r.Tenant, r.Endpoint}
+		if old, ok := s.rules[t]; ok && old.Version >= r.Version {
 			continue
 		}
 		s.version = max(s.version, r.Version)
-		s.set(r)
+		s.rules[t] = r
 	}
 }
 
@@ -138,7 +134,7 @@ func (s *Store) Since(v int64) []Rule {
 	defer s.mu.RUnlock()
 
 	out := []Rule{}
-	for _, r := range s.byID {
+	for _, r := range s.rules {
 		if r.Version > v {
 			out = append(out, r)
 		}
@@ -165,21 +161,9 @@ func (s *Store) Match(tenant, endpoint string) limiter.Rule {
 	defer s.mu.RUnlock()
 
 	for _, t := range []target{{tenant, endpoint}, {tenant, AnyEndpoint}} {
-		if id, ok := s.byTarget[t]; ok {
-			return s.byID[id].ToLimiter()
+		if r, ok := s.rules[t]; ok {
+			return r.ToLimiter()
 		}
 	}
 	return s.def
-}
-
-// set stores r and updates the target index. The caller must hold the write lock.
-// If the ID had a different target before, that old index entry is removed so it no longer matches.
-func (s *Store) set(r Rule) {
-	if old, ok := s.byID[r.ID]; ok {
-		if t := (target{old.Tenant, old.Endpoint}); s.byTarget[t] == r.ID {
-			delete(s.byTarget, t)
-		}
-	}
-	s.byID[r.ID] = r
-	s.byTarget[target{r.Tenant, r.Endpoint}] = r.ID
 }

@@ -4,8 +4,9 @@
 //   - The Rules Service: a small HTTP server that stores rate limit rules and hands them to gateways.
 //
 // Endpoints:
-//   - PUT /v1/rules/{id}       create or replace a rule. Body: {tenant, endpoint, limit, window, burst}.
-//   - GET /v1/rules?since={v}  rules newer than version v, as {version, rules}.
+//   - PUT /v1/rules/{tenant}/{endpoint}  create or replace the rule for that tenant and endpoint. Body: {limit, window, burst}.
+//     Use * as the endpoint for the tenant default.
+//   - GET /v1/rules?since={v}            rules newer than version v, as {version, rules}.
 //
 // Things to know:
 //   - Rules are kept in memory and are lost on restart.
@@ -59,12 +60,13 @@ func run() error {
 // newMux builds the two endpoints.
 func newMux(s *rules.Store) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("PUT /v1/rules/{id}", putRule(s))
+	mux.HandleFunc("PUT /v1/rules/{tenant}/{endpoint}", putRule(s))
 	mux.HandleFunc("GET /v1/rules", getRules(s))
 	return mux
 }
 
-// putRule stores the rule from the request body under the ID in the path and answers with the stored rule and its version.
+// putRule stores the rule from the request body for the tenant and endpoint in the path, and answers with the stored rule and its version.
+// The path decides the target, so a tenant or endpoint in the body is ignored.
 func putRule(s *rules.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var rule rules.Rule
@@ -72,7 +74,8 @@ func putRule(s *rules.Store) http.HandlerFunc {
 			http.Error(w, "invalid JSON body", http.StatusBadRequest)
 			return
 		}
-		rule.ID = r.PathValue("id")
+		rule.Tenant = r.PathValue("tenant")
+		rule.Endpoint = r.PathValue("endpoint")
 		if err := rule.Validate(); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
