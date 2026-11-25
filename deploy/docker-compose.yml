@@ -1,0 +1,73 @@
+# docker-compose.yml
+#
+# Runs the whole system on one machine:
+#   redis    shared counters for the rate limit
+#   rules    the Rules Service
+#   demo1    gateway instance, reachable on http://localhost:8081
+#   demo2    gateway instance, reachable on http://localhost:8082
+# Both gateways use the same Redis, so they share ONE limit per key.
+#
+# Start with (from the repository root):
+#   docker compose -f deploy/docker-compose.yml up --build
+
+# "services" lists the containers that make up the system.
+services:
+  # Redis stores the token bucket counters.
+  redis:
+    # Official Redis image, latest major version.
+    image: redis:8
+    # Persistence is off: counters are short lived, and losing them only gives clients a fresh bucket.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  # The Rules Service. Gateways fetch rules from it.
+  rules:
+    # Build the image from the Dockerfile. context ".." is the repository root, because this file is in deploy/.
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    # Tag the built image so the two demo services below reuse it instead of building twice.
+    image: rate-limiter:local
+    # Run the /rules program from the image. The distroless image has no shell, so this is a direct command.
+    entrypoint: ["/rules"]
+    command: ["-addr", ":9090"]
+    # Publish the port so you can create rules from your computer with curl.
+    ports:
+      - "9090:9090"
+
+  # First gateway instance.
+  demo1:
+    # Same image as above. Compose builds it once under the "rules" service.
+    image: rate-limiter:local
+    # Start after Redis and the Rules Service have been created.
+    depends_on:
+      - redis
+      - rules
+    # Run the /demo program with the Redis store. "redis" and "rules" are the service names, which Docker
+    # resolves to the containers' addresses on the shared network.
+    entrypoint: ["/demo"]
+    command:
+      - "-addr=:8080"
+      - "-store=redis"
+      - "-redis=redis:6379"
+      - "-rules-url=http://rules:9090"
+      - "-rules-poll=5s"
+    # Map host port 8081 to the container's 8080.
+    ports:
+      - "8081:8080"
+
+  # Second gateway instance. Identical to demo1 except for the host port.
+  demo2:
+    image: rate-limiter:local
+    depends_on:
+      - redis
+      - rules
+    entrypoint: ["/demo"]
+    command:
+      - "-addr=:8080"
+      - "-store=redis"
+      - "-redis=redis:6379"
+      - "-rules-url=http://rules:9090"
+      - "-rules-poll=5s"
+    # Map host port 8082 to the container's 8080.
+    ports:
+      - "8082:8080"
